@@ -201,6 +201,7 @@ DEFAULTS = {
             'edit_window_title': '<Control><Alt>w',
             'edit_tab_title'   : '<Control><Alt>a',
             'edit_terminal_title': '<Control><Alt>x',
+            'edit_terminal_name' : '<Shift><Control>m',
             'layout_launcher'  : '<Alt>l',
             'next_profile'     : '',
             'previous_profile' : '', 

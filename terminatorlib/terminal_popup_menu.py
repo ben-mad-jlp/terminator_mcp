@@ -177,6 +177,11 @@ class TerminalPopupMenu(object):
                                                  _('Set _Window Title'))
         item.connect('activate', lambda x: terminal.key_edit_window_title())
         menu.append(item)
+
+        item = self.menu_item(Gtk.ImageMenuItem, 'edit_terminal_name',
+                                                 _('Set Terminal _Name'))
+        item.connect('activate', lambda x: terminal.key_edit_terminal_name())
+        menu.append(item)
         
         if not terminal.is_zoomed():
             item = self.menu_item(Gtk.ImageMenuItem, 'split_auto',

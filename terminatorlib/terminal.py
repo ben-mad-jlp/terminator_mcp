@@ -2283,6 +2283,40 @@ class Terminal(Gtk.VBox):
     def key_edit_terminal_title(self):
         self.titlebar.label.edit()
 
+    def key_edit_terminal_name(self):
+        """Rename the terminal's addressable name (also shown on the titlebar).
+
+        Sets both `assigned_name` (what MCP/`rename` use to address this
+        terminal) and the titlebar's custom string, matching the MCP
+        `rename_terminal` handler so the two paths stay in sync.
+        """
+        window = self.get_toplevel()
+        dialog = Gtk.Dialog(_('Rename Terminal'), window,
+                            Gtk.DialogFlags.MODAL,
+                            (Gtk.STOCK_CANCEL, Gtk.ResponseType.REJECT,
+                             Gtk.STOCK_OK, Gtk.ResponseType.ACCEPT))
+        dialog.set_default_response(Gtk.ResponseType.ACCEPT)
+        dialog.set_resizable(False)
+        dialog.set_border_width(8)
+
+        label = Gtk.Label(label=_('Enter a new name for this terminal...'))
+        entry = Gtk.Entry()
+        entry.set_activates_default(True)
+        entry.set_text(getattr(self, 'assigned_name', '') or '')
+
+        dialog.vbox.pack_start(label, False, False, 6)
+        dialog.vbox.pack_start(entry, False, False, 6)
+
+        dialog.show_all()
+        res = dialog.run()
+        if res == Gtk.ResponseType.ACCEPT:
+            new_name = entry.get_text().strip()
+            if new_name:
+                self.titlebar.set_custom_string(new_name)
+                self.assigned_name = new_name
+        dialog.destroy()
+        return
+
     def key_layout_launcher(self):
         LAYOUTLAUNCHER=LayoutLauncher()
 

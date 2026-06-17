@@ -9,9 +9,9 @@ Two render modes (toggle from the right-click menu):
     tracks the line length, so you see the silhouette/shape of the output.
 
 A translucent box shows the current viewport; click or drag to scroll there.
-The current selection is highlighted (cyan), and a selection can be turned
-into a persistent bookmark (right-click -> Bookmark selection) which draws a
-marker you can click to jump back to.
+The current selection is highlighted (cyan). Bookmarks are owned by the
+Terminal and shown on the line-number gutter (see linenumbers.py); the minimap
+no longer renders or stores them.
 
 Per-terminal and session-only; hidden by default, toggled via
 Terminal.do_minimap_toggle.
@@ -37,7 +37,6 @@ _COLORS = {
 }
 _PRIO = {'error': 3, 'prompt': 2, 'output': 1}
 _SELECT_RGBA = (0.30, 0.70, 0.95, 0.35)
-_BOOKMARK_RGB = (1.0, 0.80, 0.20)
 
 
 class Minimap(Gtk.DrawingArea):
@@ -59,7 +58,6 @@ class Minimap(Gtk.DrawingArea):
         self._dirty = True
         self._refresh_id = 0
         self._sel_rows = None               # (start, end) absolute rows
-        self._bookmarks = []                # [{'row': int, 'label': str}]
 
         self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK
                         | Gdk.EventMask.BUTTON1_MOTION_MASK)
@@ -142,7 +140,7 @@ class Minimap(Gtk.DrawingArea):
         if self._dirty:
             self._recompute()
 
-    # ---- selection + bookmarks -------------------------------------------
+    # ---- selection -------------------------------------------------------
 
     def _on_selection_changed(self, *_a):
         if not self.vte.get_has_selection():
@@ -180,37 +178,6 @@ class Minimap(Gtk.DrawingArea):
                 return (self._scan_start + i,
                         self._scan_start + min(len(self._lines) - 1, i + n - 1))
         return None
-
-    def bookmark_selection(self):
-        """Turn the current selection into a persistent bookmark."""
-        try:
-            sel = self.vte.get_text_selected(Vte.Format.TEXT)
-            if isinstance(sel, tuple):
-                sel = sel[0]
-        except Exception:
-            sel = None
-        rows = self.locate_text(sel) if sel else None
-        if rows is None:
-            return False
-        label = (sel.strip().splitlines() or [''])[0][:40]
-        self._bookmarks.append({'row': rows[0], 'label': label})
-        self.queue_draw()
-        return True
-
-    def add_bookmark(self, row, label=''):
-        """Add a bookmark at an absolute buffer row (used by the MCP bridge)."""
-        self._bookmarks.append({'row': int(row), 'label': str(label)[:60]})
-        self.queue_draw()
-        return self._bookmarks[-1]
-
-    def get_bookmarks(self):
-        """Bookmarks as plain dicts, most-recent last."""
-        return [dict(b) for b in self._bookmarks]
-
-    def clear_bookmarks(self):
-        if self._bookmarks:
-            self._bookmarks = []
-            self.queue_draw()
 
     # ---- geometry --------------------------------------------------------
 
@@ -271,20 +238,6 @@ class Minimap(Gtk.DrawingArea):
             cr.rectangle(0, top, width, bot - top)
             cr.fill()
 
-        # bookmark markers
-        for bm in self._bookmarks:
-            by = self._row_to_y(bm['row'], height)
-            if by < 0 or by > height:
-                continue
-            cr.set_source_rgb(*_BOOKMARK_RGB)
-            cr.move_to(0, by - 4)
-            cr.line_to(7, by)
-            cr.line_to(0, by + 4)
-            cr.close_path()
-            cr.fill()
-            cr.rectangle(0, by - 0.5, width, 1)
-            cr.fill()
-
         # current viewport box
         span = n or 1
         value = self._adj.get_value()
@@ -304,25 +257,10 @@ class Minimap(Gtk.DrawingArea):
 
     # ---- interaction -----------------------------------------------------
 
-    def _click_bookmark(self, y, height):
-        """Return a bookmark whose marker is within 5px of y, else None."""
-        for bm in self._bookmarks:
-            if abs(self._row_to_y(bm['row'], height) - y) <= 5:
-                return bm
-        return None
-
     def _on_button(self, _widget, event):
         if event.button != 1:
             return False
-        alloc = self.get_allocation()
-        bm = self._click_bookmark(event.y, alloc.height or 1)
-        if bm is not None:
-            page = self._adj.get_page_size()
-            lo = self._adj.get_lower()
-            hi = max(lo, self._adj.get_upper() - page)
-            self._adj.set_value(max(lo, min(hi, bm['row'] - page / 2.0)))
-        else:
-            self._adj.set_value(self._y_to_value(event.y))
+        self._adj.set_value(self._y_to_value(event.y))
         return True
 
     def _on_motion(self, _widget, event):

@@ -165,10 +165,12 @@ class MCPBridge(plugin.Plugin):
             'split': self._h_split,
             'set_tab_title': self._h_set_tab_title,
             'rename_terminal': self._h_rename_terminal,
-            # navigation + minimap bookmarks
+            # navigation + bookmarks
             'scroll_to': self._h_scroll_to,
             'list_bookmarks': self._h_list_bookmarks,
             'add_bookmark': self._h_add_bookmark,
+            'remove_bookmark': self._h_remove_bookmark,
+            'drain_bookmark_events': self._h_drain_bookmark_events,
         }
         # Start the socket exactly once for the whole process.
         if _RUNNING['service'] is None:
@@ -802,8 +804,7 @@ class MCPBridge(plugin.Plugin):
 
     def _h_list_bookmarks(self, args):
         term = self._resolve(args.get('uuid', ''))
-        mm = getattr(term, 'minimap', None)
-        return {'bookmarks': mm.get_bookmarks() if mm is not None else []}
+        return {'bookmarks': term.get_bookmarks()}
 
     def _h_add_bookmark(self, args):
         """Bookmark a row, found either by absolute row or by text/pattern.
@@ -813,10 +814,6 @@ class MCPBridge(plugin.Plugin):
         line becomes the default label.
         """
         term = self._resolve(args.get('uuid', ''))
-        mm = getattr(term, 'minimap', None)
-        if mm is None:
-            raise _BridgeError('no_minimap')
-
         pattern = args.get('pattern')
         if pattern:
             found, _trunc = self._search_rows(
@@ -830,8 +827,44 @@ class MCPBridge(plugin.Plugin):
         else:
             row = int(args.get('row', 0))
             label = args.get('label', '')
-        bm = mm.add_bookmark(row, label)
-        return {'ok': True, 'bookmark': bm}
+        term.add_bookmark(row, label)
+        return {'ok': True, 'bookmark': {'row': row, 'label': label}}
+
+    def _h_remove_bookmark(self, args):
+        term = self._resolve(args.get('uuid', ''))
+        removed = term.remove_bookmark(int(args.get('row', -1)))
+        return {'ok': bool(removed)}
+
+    def _h_drain_bookmark_events(self, args):
+        """Drain unseen bookmark clicks for the UserPromptSubmit hook.
+
+        Returns events across ALL terminals (the hook runs once per submit and
+        needs everything since the last drain). Each event includes the row,
+        the line text, ±`context` rows of surrounding context, and identifying
+        info for the terminal. Resets the per-terminal unseen queue.
+        """
+        context = _clamp(int(args.get('context', 3)), 0, 20)
+        out = []
+        for term in self.terminator.terminals:
+            rows = term.drain_unseen_bookmarks()
+            if not rows:
+                continue
+            vte = term.get_vte()
+            total = int(vte.get_vadjustment().get_upper())
+            for row in rows:
+                start = max(0, row - context)
+                end = min(total - 1, row + context)
+                text = _read_rows(vte, start, end) if total > 0 else ''
+                out.append({
+                    'uuid': term.uuid.urn,
+                    'name': getattr(term, 'assigned_name', None),
+                    'row': row,
+                    'context_start': start,
+                    'context_end': end,
+                    'line': _read_rows(vte, row, row).rstrip('\n'),
+                    'context': text,
+                })
+        return {'events': out}
 
 
 class _BridgeError(Exception):

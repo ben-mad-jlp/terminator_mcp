@@ -129,6 +129,7 @@ class PrefsEditor:
                         'paste_selection'  : _('Paste primary selection'),
                         'send_newline'     : _('Send a newline to the terminal'),
                         'toggle_scrollbar' : _('Show/Hide the scrollbar'),
+                        'toggle_linenumbers': _('Show/Hide the line numbers'),
                         'search'           : _('Search terminal scrollback'),
                         'page_up'          : _('Scroll upwards one page'),
                         'page_down'        : _('Scroll downwards one page'),

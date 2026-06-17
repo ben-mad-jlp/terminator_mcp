@@ -218,6 +218,13 @@ class Terminal(Gtk.VBox):
         self.assigned_name = 'term-%d' % Terminal._name_counter
         self.titlebar.update()  # render the name prefix now that it's set
 
+        # Bookmarks (single source of truth, shared by LineNumbers and MCP).
+        # _bookmarks maps absolute buffer row -> label string. _unseen is the
+        # delta queue: rows added since the last drain. A row added then removed
+        # before drain leaves the queue empty so misclicks vanish.
+        self._bookmarks = {}
+        self._unseen_bookmarks = []
+
     def set_background_image(self,image):
         try: 
             bg_pixbuf = GdkPixbuf.Pixbuf.new_from_file(image)
@@ -355,10 +362,12 @@ class Terminal(Gtk.VBox):
         self.minimap = Minimap(self)
         self.linenumbers = LineNumbers(self)
 
-        terminalbox.pack_start(self.minimap, False, True, 0)
         terminalbox.pack_start(self.linenumbers, False, True, 0)
+        terminalbox.pack_start(self.minimap, False, True, 0)
         terminalbox.pack_start(self.vte, True, True, 0)
         terminalbox.pack_start(self.scrollbar, False, True, 0)
+        # Show the line-number gutter by default (overrides set_no_show_all).
+        self.linenumbers.show()
         terminalbox.show_all()
 
         return(terminalbox)
@@ -940,10 +949,22 @@ class Terminal(Gtk.VBox):
             self.scrollbar.hide()
         else:
             self.scrollbar.show()
-            if self.config['scrollbar_position'] == 'left':
-                self.terminalbox.reorder_child(self.scrollbar, 0)
-            elif self.config['scrollbar_position'] == 'right':
-                self.terminalbox.reorder_child(self.vte, 0)
+
+        # Force a consistent left-to-right order: optional left-side scrollbar,
+        # then the line-number gutter, then the VTE, then the minimap, then
+        # the optional right-side scrollbar. Upstream's reorder only positions
+        # the scrollbar/vte and would leave the gutter and minimap stranded;
+        # setting each position explicitly keeps the gutter immediately left of
+        # the terminal and the minimap just before the right-side scrollbar.
+        pos = 0
+        if self.config['scrollbar_position'] == 'left':
+            self.terminalbox.reorder_child(self.scrollbar, pos)
+            pos += 1
+        self.terminalbox.reorder_child(self.linenumbers, pos); pos += 1
+        self.terminalbox.reorder_child(self.vte, pos);         pos += 1
+        self.terminalbox.reorder_child(self.minimap, pos);     pos += 1
+        if self.config['scrollbar_position'] == 'right':
+            self.terminalbox.reorder_child(self.scrollbar, pos)
 
         self.titlebar.update()
         self.vte.queue_draw()
@@ -1240,11 +1261,54 @@ class Terminal(Gtk.VBox):
         if self.linenumbers.get_property('visible'):
             self.linenumbers.queue_draw()
 
-    def do_bookmark_selection(self):
-        """Bookmark the current selection on the minimap (and show it)"""
-        if not self.minimap.get_property('visible'):
-            self.do_minimap_toggle()
-        self.minimap.bookmark_selection()
+    def add_bookmark(self, row, label=''):
+        """Mark `row` (absolute buffer row) as bookmarked. Idempotent."""
+        row = int(row)
+        if row in self._bookmarks:
+            return self._bookmarks[row]
+        self._bookmarks[row] = str(label)[:80]
+        self._unseen_bookmarks.append(row)
+        self._redraw_linenumbers()
+        return self._bookmarks[row]
+
+    def remove_bookmark(self, row):
+        """Remove a bookmark. If the row was added since the last drain,
+        cancel the unseen entry too (this is what makes misclicks free)."""
+        row = int(row)
+        if row not in self._bookmarks:
+            return False
+        del self._bookmarks[row]
+        try:
+            self._unseen_bookmarks.remove(row)
+        except ValueError:
+            pass
+        self._redraw_linenumbers()
+        return True
+
+    def toggle_bookmark(self, row):
+        """Add the bookmark if missing, remove it if present."""
+        row = int(row)
+        if row in self._bookmarks:
+            self.remove_bookmark(row)
+            return False
+        self.add_bookmark(row, '')
+        return True
+
+    def get_bookmarks(self):
+        """Bookmarks as [{'row': int, 'label': str}], sorted by row."""
+        return [{'row': r, 'label': self._bookmarks[r]}
+                for r in sorted(self._bookmarks)]
+
+    def drain_unseen_bookmarks(self):
+        """Pop and return rows added since the last drain (oldest first)."""
+        rows = self._unseen_bookmarks
+        self._unseen_bookmarks = []
+        return rows
+
+    def _redraw_linenumbers(self):
+        gut = getattr(self, 'linenumbers', None)
+        if gut is not None:
+            gut.queue_draw()
 
     def toggle_widget_visibility(self, widget):
         """Show or hide a widget"""
@@ -2047,6 +2111,9 @@ class Terminal(Gtk.VBox):
 
     def key_toggle_scrollbar(self):
         self.do_scrollbar_toggle()
+
+    def key_toggle_linenumbers(self):
+        self.do_linenumbers_toggle()
 
     def key_zoom_normal(self):
         self.zoom_orig ()

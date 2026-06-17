@@ -149,6 +149,7 @@ DEFAULTS = {
             'paste_selection'  : '',
             'send_newline'     : '<Shift>Return',
             'toggle_scrollbar' : '<Shift><Control>s',
+            'toggle_linenumbers': '<Shift><Control>l',
             'search'           : '<Shift><Control>f',
             'page_up'          : '',
             'page_down'        : '',

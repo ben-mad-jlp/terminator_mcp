@@ -343,10 +343,12 @@ def scroll_to(terminal: str = '', row: int = -1, position: str = '') -> dict:
 
 @mcp.tool()
 def list_bookmarks(terminal: str = '') -> dict:
-    """List the minimap bookmarks for a terminal as {row, label}.
+    """List the bookmarks for a terminal as {row, label}.
 
-    Pair with scroll_to(row=...) to jump to a bookmark. terminal: uuid or
-    friendly title; empty = focused.
+    Bookmarks are absolute buffer rows the user marked on the line-number
+    gutter (or that an agent added via add_bookmark). Pair with
+    scroll_to(row=...) to jump to one. terminal: uuid or friendly title;
+    empty = focused.
     """
     try:
         uuid = _resolve(terminal)
@@ -359,7 +361,7 @@ def list_bookmarks(terminal: str = '') -> dict:
 def add_bookmark(terminal: str = '', row: int = -1, pattern: str = '',
                  label: str = '', regex: bool = False,
                  case_sensitive: bool = False) -> dict:
-    """Add a minimap bookmark — by absolute row OR by text/pattern search.
+    """Add a bookmark — by absolute row OR by text/pattern search.
 
     Provide `pattern` to bookmark the first matching line (the matched line
     becomes the label unless you pass one); `regex=false` matches literally.
@@ -375,6 +377,20 @@ def add_bookmark(terminal: str = '', row: int = -1, pattern: str = '',
         else:
             args['row'] = row
         return socket_client.call('add_bookmark', args)
+    except (socket_client.BridgeError, ValueError) as ex:
+        return _err(ex)
+
+
+@mcp.tool()
+def remove_bookmark(terminal: str = '', row: int = -1) -> dict:
+    """Remove the bookmark at `row` from `terminal`.
+
+    terminal: uuid or friendly title; empty = focused.
+    """
+    try:
+        uuid = _resolve(terminal)
+        return socket_client.call('remove_bookmark',
+                                  {'uuid': uuid, 'row': row})
     except (socket_client.BridgeError, ValueError) as ex:
         return _err(ex)
 

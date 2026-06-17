@@ -199,6 +199,33 @@ tools return `{"error": "terminator_not_running"}`.
 - Command-output capture (`run_command`) is best-effort; interactive TUIs can
   defeat it — fall back to `send_keys` + `read_terminal`.
 
+## Tips
+
+### Using with tmux (or screen) on a remote host
+
+tmux uses the terminal's **alternate screen**, which VTE does not record into
+its scrollback. The MCP server reads from VTE's scrollback, so by default
+`read_raw`, `tail`, `find_in_scrollback`, the line-number gutter, and bookmarks
+all see *nothing* while you are attached to tmux — even though text is visible
+on screen.
+
+If you want remote-session persistence (so a roslaunch keeps running across VM
+suspends or SSH disconnects) **and** working MCP/bookmarks, disable tmux's
+alt-screen on the remote. In `~/.tmux.conf` on the remote host:
+
+```tmux
+set -ga terminal-overrides ',*:smcup@:rmcup@'
+```
+
+Note `-ga` (global + append), not `-g` — plain `-g` replaces the whole
+`terminal-overrides` string and the change won't take effect. After
+`tmux kill-server` and reattach, tmux output flows into VTE's normal scrollback
+and all MCP read tools / bookmarks work through tmux normally.
+
+Trade-off: detaching no longer "restores" the pre-tmux screen — the tmux
+contents stay visible in scrollback. For the read-tools-through-tmux use case
+this is usually what you want anyway.
+
 ## Fork notes
 
 This fork is set up to run **alongside** an unmodified system Terminator,

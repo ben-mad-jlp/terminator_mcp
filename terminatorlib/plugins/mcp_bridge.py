@@ -156,6 +156,8 @@ class MCPBridge(plugin.Plugin):
             'run_command_capture': self._h_run_command_capture,
             # P2 — send / search / focus / raw read
             'send_text': self._h_send_text,
+            'write_display': self._h_write_display,
+            'redraw_prompt': self._h_redraw_prompt,
             'search_terminal': self._h_search_terminal,
             'focus_terminal': self._h_focus_terminal,
             'read_raw': self._h_read_raw,
@@ -621,6 +623,48 @@ class MCPBridge(plugin.Plugin):
             'sent_bytes': len(data),
             'visible_text': self._visible_text(vte),
         }
+
+    def _h_write_display(self, args):
+        """Write raw bytes to the terminal display only — never to the child's
+        stdin. Lets an external process stream output into a pane while the
+        shell stays at its prompt. ANSI escapes and color codes are rendered."""
+        term = self._resolve(args.get('uuid', ''))
+        vte = term.get_vte()
+        text = args.get('text', '')
+        data = text.encode() if isinstance(text, str) else text
+        vte.feed(data)
+        # No _settle: vte.feed is synchronous to the display, and we may be
+        # called once per output line at high frequency.
+        return {'ok': True, 'wrote_bytes': len(data)}
+
+    def _h_redraw_prompt(self, args):
+        """Force the shell to redraw its prompt + input line by flickering the
+        pty winsize. A bare SIGWINCH is a no-op when the size hasn't actually
+        changed; setting winsize to (cols-1, rows) then back to (cols, rows)
+        triggers two real SIGWINCHes and bash's readline picks up the second
+        one as a redraw. Used after streaming external output into the pane."""
+        import fcntl
+        import struct
+        import termios
+        term = self._resolve(args.get('uuid', ''))
+        vte = term.get_vte()
+        try:
+            pty_obj = vte.get_pty()
+            master_fd = pty_obj.get_fd() if pty_obj else None
+        except Exception:
+            master_fd = None
+        if master_fd is None or master_fd < 0:
+            return {'ok': False, 'error': 'no_pty_fd'}
+        rows = max(int(vte.get_row_count() or 24), 2)
+        cols = max(int(vte.get_column_count() or 80), 2)
+        try:
+            small = struct.pack('HHHH', rows, cols - 1, 0, 0)
+            real = struct.pack('HHHH', rows, cols, 0, 0)
+            fcntl.ioctl(master_fd, termios.TIOCSWINSZ, small)
+            fcntl.ioctl(master_fd, termios.TIOCSWINSZ, real)
+        except OSError as e:
+            return {'ok': False, 'error': 'ioctl_failed: %s' % e}
+        return {'ok': True, 'rows': rows, 'cols': cols}
 
     def _h_search_terminal(self, args):
         """Read-only regex scan of the buffer → matches with absolute row nums.

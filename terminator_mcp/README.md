@@ -195,7 +195,10 @@ tools return `{"error": "terminator_not_running"}`.
   (~60 s TTL, bound to the exact command + terminal). Re-call with it, or use
   `confirm`.
 - **`send_keys`** does not press Enter by default and rejects control/escape
-  bytes unless `raw=true`. It always returns the post-send screen.
+  bytes unless `raw=true`. With `raw=true` it decodes backslash escapes
+  (`\x03` = Ctrl+C, `\e[A` = Up, `\\` = literal backslash), since JSON tool
+  arguments can't carry `\x` escapes themselves. It always returns the
+  post-send screen.
 - Command-output capture (`run_command`) is best-effort; interactive TUIs can
   defeat it — fall back to `send_keys` + `read_terminal`.
 

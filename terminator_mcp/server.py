@@ -13,6 +13,8 @@ Run:  python -m terminator_mcp
 Register with Claude Code:  claude mcp add terminator -- python -m terminator_mcp
 """
 
+import re
+
 from mcp.server.fastmcp import FastMCP
 
 from . import socket_client, naming, safety
@@ -189,6 +191,26 @@ def _password_gate(uuid):
     return None
 
 
+# MCP args arrive as JSON strings, and JSON has no \x escape: an agent that
+# writes "\x03" delivers four literal characters. Raw mode decodes these.
+_ESCAPE_RE = re.compile(r'\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|[enrtab0\\]|.|$)')
+_SIMPLE_ESCAPES = {'e': '\x1b', 'n': '\n', 'r': '\r', 't': '\t', 'a': '\x07',
+                   'b': '\x08', '0': '\x00', '\\': '\\'}
+
+
+def _decode_escapes(text):
+    """Decode \\xNN, \\uNNNN, \\e, \\n, \\r, \\t, \\a, \\b, \\0, \\\\.
+    Raises ValueError on any other backslash sequence."""
+    def sub(m):
+        esc = m.group(1)
+        if esc[:1] in ('x', 'u') and len(esc) > 1:
+            return chr(int(esc[1:], 16))
+        if esc in _SIMPLE_ESCAPES:
+            return _SIMPLE_ESCAPES[esc]
+        raise ValueError('unknown escape \\%s' % esc)
+    return _ESCAPE_RE.sub(sub, text)
+
+
 def _do_send(uuid, text, enter, raw):
     return socket_client.call('send_text', {
         'uuid': uuid, 'text': text, 'append_enter': enter, 'raw': raw,
@@ -235,6 +257,10 @@ def send_keys(text: str, terminal: str = '', enter: bool = False,
     password gate + destructive denylist + confirmation flow as run_command
     applies. Always returns the post-send visible screen.
 
+    raw=true decodes backslash escapes: \\xNN, \\uNNNN, \\e (ESC), \\n, \\r,
+    \\t, \\a, \\b, \\0, and \\\\ for a literal backslash. Examples:
+    Ctrl+C is text="\\x03" raw=true; Ctrl+D is "\\x04"; Up arrow is "\\e[A".
+
     terminal: uuid or friendly title; empty = focused terminal.
     """
     try:
@@ -242,7 +268,13 @@ def send_keys(text: str, terminal: str = '', enter: bool = False,
     except (socket_client.BridgeError, ValueError) as ex:
         return _err(ex)
 
-    if not raw and safety.has_blocked_control_bytes(text):
+    if raw:
+        try:
+            text = _decode_escapes(text)
+        except ValueError as ex:
+            return {'error': 'invalid_escape', 'message': str(ex),
+                    'hint': 'write a literal backslash as \\\\ when raw=true'}
+    elif safety.has_blocked_control_bytes(text):
         return {'error': 'control_bytes_blocked',
                 'hint': 'set raw=true to send control/escape sequences'}
 

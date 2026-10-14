@@ -200,6 +200,30 @@ tools return `{"error": "terminator_not_running"}`.
 - Command-output capture (`run_command`) is best-effort; interactive TUIs can
   defeat it — fall back to `send_keys` + `read_terminal`.
 
+## Bookmarks
+
+Click a row in the line-number gutter to bookmark it. The
+`terminator_mcp.bookmark_hook` UserPromptSubmit hook sends your new bookmarks
+to Claude with your next prompt.
+
+- **Text is captured when you click.** The clicked row and the 3 rows on each
+  side are captured then, so the agent gets exactly what you saw, even if you
+  maximize, split or resize before sending. To send more per bookmark,
+  maximize the pane before clicking: wider rows hold more of each log line.
+- **Gutter marks are tied to row numbers, not text.** Any reflow (maximize,
+  split, resize, font change) re-wraps lines, so a mark can end up beside
+  different text. That only affects the display; what gets sent was captured
+  at click time.
+- **Rows are hex, like the gutter.** The hook reports `row=0x69 (105)`. The
+  decimal is for `read_raw`.
+- **Each bookmark is sent once, to whichever Claude session you next submit a
+  prompt in.** There is one queue for all of Terminator. To send the same line
+  again (to the same or another session), click it off and on again. Clicking
+  a line that is still marked only removes the mark. Removing a bookmark
+  before sending cancels it.
+- **One bookmark per row number.** You can't mark two different lines that
+  land on the same row number in different layouts.
+
 ## Owned panes (bridge RPCs for other MCP servers)
 
 `spawn_in_pane`, `owned_status` and `signal_owned` let another MCP server run a

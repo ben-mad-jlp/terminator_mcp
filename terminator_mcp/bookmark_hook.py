@@ -22,23 +22,33 @@ import sys
 from . import socket_client
 
 
+def _row(value):
+    """Hex like the line-number gutter, with decimal for read_raw."""
+    if value is None:
+        return '?'
+    return '0x%X (%d)' % (value, value)
+
+
 def _format(events):
     lines = [
         '<system-reminder>',
-        'Terminal bookmarks the user clicked since the last message '
-        '(rows are absolute buffer rows; use the terminator MCP '
-        '`read_raw` to fetch more context if needed):',
+        'Terminal bookmarks the user clicked since the last message. Text was '
+        'captured at click time. Rows are absolute buffer rows as of the '
+        'click; a resize since then may have moved them, so use the terminator '
+        'MCP `read_raw` for more context only if the pane has not been resized:',
         '',
     ]
     for ev in events:
         name = ev.get('name') or ev.get('uuid')
-        row = ev.get('row')
-        context = (ev.get('context') or '').rstrip('\n')
-        start = ev.get('context_start')
-        end = ev.get('context_end')
         lines.append('--- terminal=%s row=%s context=[%s..%s] ---'
-                     % (name, row, start, end))
-        lines.append(context)
+                     % (name, _row(ev.get('row')),
+                        _row(ev.get('context_start')),
+                        _row(ev.get('context_end'))))
+        context = ev.get('context')
+        if context is None:
+            lines.append('(text could not be captured at click time)')
+        else:
+            lines.append(context.rstrip('\n'))
         lines.append('')
     lines.append('</system-reminder>')
     return '\n'.join(lines)
@@ -46,7 +56,7 @@ def _format(events):
 
 def main():
     try:
-        result = socket_client.call('drain_bookmark_events', {'context': 3})
+        result = socket_client.call('drain_bookmark_events', {})
     except socket_client.BridgeError:
         return 0
     events = (result or {}).get('events') or []

@@ -996,31 +996,19 @@ class MCPBridge(plugin.Plugin):
         """Drain unseen bookmark clicks for the UserPromptSubmit hook.
 
         Returns events across ALL terminals (the hook runs once per submit and
-        needs everything since the last drain). Each event includes the row,
-        the line text, ±`context` rows of surrounding context, and identifying
-        info for the terminal. Resets the per-terminal unseen queue.
+        needs everything since the last drain). Each event is the snapshot
+        taken when the user clicked (Terminal._snapshot_bookmark: row, line,
+        context rows), plus identifying info for the terminal. Text is not
+        re-read here: a resize since the click would have moved it. Resets the
+        per-terminal unseen queue.
         """
-        context = _clamp(int(args.get('context', 3)), 0, 20)
         out = []
         for term in self.terminator.terminals:
-            rows = term.drain_unseen_bookmarks()
-            if not rows:
-                continue
-            vte = term.get_vte()
-            total = int(vte.get_vadjustment().get_upper())
-            for row in rows:
-                start = max(0, row - context)
-                end = min(total - 1, row + context)
-                text = _read_rows(vte, start, end) if total > 0 else ''
-                out.append({
-                    'uuid': term.uuid.urn,
-                    'name': getattr(term, 'assigned_name', None),
-                    'row': row,
-                    'context_start': start,
-                    'context_end': end,
-                    'line': _read_rows(vte, row, row).rstrip('\n'),
-                    'context': text,
-                })
+            for snap in term.drain_unseen_bookmarks():
+                event = dict(snap)
+                event['uuid'] = term.uuid.urn
+                event['name'] = getattr(term, 'assigned_name', None)
+                out.append(event)
         return {'events': out}
 
     # ---- handlers: owned panes -------------------------------------------

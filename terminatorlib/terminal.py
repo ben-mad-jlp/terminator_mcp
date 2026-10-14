@@ -34,6 +34,9 @@ from . import regex
 from .minimap import Minimap
 from .linenumbers import LineNumbers
 
+# Rows captured on each side of a bookmark when it is clicked.
+BOOKMARK_CONTEXT_ROWS = 3
+
 # pylint: disable-msg=R0904
 class Terminal(Gtk.VBox):
     """Class implementing the VTE widget and its wrappings"""
@@ -220,8 +223,9 @@ class Terminal(Gtk.VBox):
 
         # Bookmarks (single source of truth, shared by LineNumbers and MCP).
         # _bookmarks maps absolute buffer row -> label string. _unseen is the
-        # delta queue: rows added since the last drain. A row added then removed
-        # before drain leaves the queue empty so misclicks vanish.
+        # delta queue: snapshots of bookmarks added since the last drain. A row
+        # added then removed before drain leaves the queue empty so misclicks
+        # vanish.
         self._bookmarks = {}
         self._unseen_bookmarks = []
 
@@ -1267,9 +1271,42 @@ class Terminal(Gtk.VBox):
         if row in self._bookmarks:
             return self._bookmarks[row]
         self._bookmarks[row] = str(label)[:80]
-        self._unseen_bookmarks.append(row)
+        self._unseen_bookmarks.append(self._snapshot_bookmark(row))
         self._redraw_linenumbers()
         return self._bookmarks[row]
+
+    def _snapshot_bookmark(self, row):
+        """Capture a bookmark's text at click time.
+
+        A resize re-wraps the buffer, so the same row number holds different
+        text afterwards; reading at drain time would hand the agent whatever
+        moved there. Returns {row, line, context_start, context_end, context},
+        with line/context None if the text couldn't be read.
+        """
+        snap = {'row': row, 'line': None, 'context_start': None,
+                'context_end': None, 'context': None}
+        try:
+            vadj = self.vte.get_vadjustment()
+            lower = int(vadj.get_lower())
+            last = int(vadj.get_upper()) - 1
+            start = max(lower, row - BOOKMARK_CONTEXT_ROWS)
+            end = min(last, row + BOOKMARK_CONTEXT_ROWS)
+            snap['line'] = self._buffer_text(row, row).rstrip('\n')
+            snap['context'] = self._buffer_text(start, end)
+            snap['context_start'] = start
+            snap['context_end'] = end
+        except Exception as ex:
+            dbg('bookmark snapshot failed for row %d: %s' % (row, ex))
+        return snap
+
+    def _buffer_text(self, start_row, end_row):
+        """Text of buffer rows [start_row, end_row] inclusive. Soft-wrapped
+        rows come back joined, so a wrapped log line reads whole."""
+        res = self.vte.get_text_range_format(Vte.Format.TEXT, start_row, 0,
+                                             end_row + 1, 0)
+        if isinstance(res, tuple):
+            res = res[0] if res else ''
+        return res or ''
 
     def remove_bookmark(self, row):
         """Remove a bookmark. If the row was added since the last drain,
@@ -1278,10 +1315,8 @@ class Terminal(Gtk.VBox):
         if row not in self._bookmarks:
             return False
         del self._bookmarks[row]
-        try:
-            self._unseen_bookmarks.remove(row)
-        except ValueError:
-            pass
+        self._unseen_bookmarks = [s for s in self._unseen_bookmarks
+                                  if s['row'] != row]
         self._redraw_linenumbers()
         return True
 
@@ -1300,10 +1335,11 @@ class Terminal(Gtk.VBox):
                 for r in sorted(self._bookmarks)]
 
     def drain_unseen_bookmarks(self):
-        """Pop and return rows added since the last drain (oldest first)."""
-        rows = self._unseen_bookmarks
+        """Pop and return click-time snapshots (see _snapshot_bookmark) of
+        bookmarks added since the last drain, oldest first."""
+        snaps = self._unseen_bookmarks
         self._unseen_bookmarks = []
-        return rows
+        return snaps
 
     def _redraw_linenumbers(self):
         gut = getattr(self, 'linenumbers', None)

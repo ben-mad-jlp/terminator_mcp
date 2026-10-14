@@ -1,13 +1,9 @@
 # terminator-mcp
 
-An MCP server that lets an LLM (e.g. Claude) observe — and, in later phases,
-drive — a running [Terminator](https://github.com/gnome-terminator/terminator)
-terminal emulator.
-
-**Status: P0 — read-only.** The server can list terminals and read their
-buffer / scrollback / selection. It has **no** ability to type, run commands,
-or otherwise change a terminal. Write/send tools arrive in later phases behind
-a safety model (password-prompt gate, destructive-command confirmation).
+An MCP server that lets an LLM (e.g. Claude) observe and drive a running
+[Terminator](https://github.com/gnome-terminator/terminator) terminal emulator:
+read buffers, run and send commands behind a safety model (see [Safety](#safety)),
+and manage tabs, panes and bookmarks.
 
 ## Architecture
 
@@ -105,7 +101,7 @@ update-desktop-database ~/.local/share/applications || true
 **E. MCP server**
 ```bash
 python3 -m venv ~/.local/share/terminator-mcp/venv
-~/.local/share/terminator-mcp/venv/bin/pip install mcp
+~/.local/share/terminator-mcp/venv/bin/pip install 'mcp<2'   # 2.x renamed FastMCP
 claude mcp add terminator -s user \
   --env PYTHONPATH=$REPO \
   -- ~/.local/share/terminator-mcp/venv/bin/python -m terminator_mcp
@@ -152,7 +148,7 @@ regardless of the MCP server.
 
 ## Tools
 
-Read-only (P0):
+Read-only:
 
 | Tool | Args | Returns |
 |------|------|---------|
@@ -177,6 +173,8 @@ Write / command (gated — see Safety):
 | `scroll_to` | `terminal?, row, position?` | scroll to a row (or 'top'/'bottom'); row<0 = bottom |
 | `add_bookmark` | `terminal?, row \| pattern, label?, regex?, case_sensitive?` | bookmark a row, by number or text search |
 | `list_bookmarks` | `terminal?` | minimap bookmarks `[{row, label}]` |
+| `new_tab` | `terminal?, name?` | `{uuid, name}`. Layout only; run things with `run_command` |
+| `split` | `terminal?, axis='h'` | `{uuid}`. Layout only; run things with `run_command` |
 
 `terminal` accepts a UUID or a friendly title (case-insensitive); empty selects
 the focused terminal. If Terminator isn't running / the plugin isn't enabled,
@@ -201,6 +199,14 @@ tools return `{"error": "terminator_not_running"}`.
   post-send screen.
 - Command-output capture (`run_command`) is best-effort; interactive TUIs can
   defeat it — fall back to `send_keys` + `read_terminal`.
+
+## Owned panes (bridge RPCs for other MCP servers)
+
+`spawn_in_pane`, `owned_status` and `signal_owned` let another MCP server run a
+process with an exact argv and environment in a managed tab, and stop it later.
+They have no MCP tools here: they exist so a client can wrap them in its own
+policy, such as jlp-claude-plugin's `run_sim`. Design and semantics:
+[doc/planning/owned_panes.md](doc/planning/owned_panes.md).
 
 ## Tips
 

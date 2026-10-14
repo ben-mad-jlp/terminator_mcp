@@ -4,10 +4,10 @@
 Terminator GTK process so an external MCP server (the `terminator_mcp`
 package) can let an LLM observe and drive the running terminals.
 
-P0 scope: READ-ONLY. The socket exposes only liveness + read methods
-(list terminals, read buffer/scrollback, read selection). No write / send /
-command-execution methods exist yet — those arrive in later phases behind the
-safety model. There is therefore nothing here that can mutate a terminal.
+Methods cover reading buffers, typing into panes (guarded by the MCP server's
+safety model), layout and naming, bookmarks, and owned panes: processes
+spawned directly into a managed tab that only their owner may signal (see
+terminator_mcp/doc/planning/owned_panes.md).
 
 Design: the socket lives on the EXISTING GLib main loop via Gio.SocketService,
 so its `incoming` callbacks run ON the GTK main thread. That gives direct,
@@ -31,6 +31,8 @@ config, e.g. ~/.config/terminator/config:
 import os
 import re
 import json
+import time
+import signal
 import struct
 
 from gi.repository import Gio, GLib
@@ -52,6 +54,13 @@ CAPTURE_TIMEOUT_MS = 15000          # default run_command_capture timeout
 CAPTURE_TIMEOUT_CAP = 120000        # absolute clamp on a capture timeout
 CAPTURE_POLL_MS = 60                # marker poll interval (yields to the loop)
 SEARCH_SCAN_CAP = 5000              # max recent rows scanned by search
+OWNED_SIGNAL_WAIT_MS = 10000        # default wait for an owned pane to exit
+OWNED_SIGNAL_WAIT_CAP = 60000       # absolute clamp on that wait
+OWNED_POLL_MS = 60                  # exit poll interval (yields to the loop)
+OWNED_SIGNALS = {'INT': signal.SIGINT, 'TERM': signal.SIGTERM,
+                 'KILL': signal.SIGKILL}
+OWNED_LABEL_RE = re.compile(r'^[a-z0-9_-]+$')
+ENV_KEY_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 
 # Heuristic for a prompt we must never blind-type into. Mirrors the hard,
 # non-overridable gate in terminator_mcp.safety; the plugin reports the signal,
@@ -129,6 +138,106 @@ def _read_rows(vte, start_row, end_row):
 # and keep it for the life of the process.
 _RUNNING = {'service': None}
 
+# Owned-pane registry, module-level for the same reason as _RUNNING: plugin
+# instances are recreated on every new terminal. Keyed by (owner, name).
+# Record: {owner, name, tab, uuid, pid, started_at, exit_status}; exit_status
+# is None while the process runs.
+_OWNED = {}
+
+
+def validate_spawn_args(args):
+    """Check and normalise spawn_in_pane args. Returns
+    (owner, name, argv, env, tab, cwd) or raises _BridgeError."""
+    owner = args.get('owner') or ''
+    name = args.get('name') or ''
+    if not OWNED_LABEL_RE.match(owner):
+        raise _BridgeError('bad_owner')
+    if not OWNED_LABEL_RE.match(name):
+        raise _BridgeError('bad_name')
+    argv = args.get('argv')
+    if (not isinstance(argv, list) or not argv
+            or not all(isinstance(a, str) for a in argv)):
+        raise _BridgeError('bad_argv')
+    # argv follows `env -i K=V ...`, so a leading '=' word would be taken
+    # as another assignment.
+    if '=' in argv[0]:
+        raise _BridgeError('bad_argv')
+    env = args.get('env')
+    if not isinstance(env, dict):
+        raise _BridgeError('bad_env')
+    for key, value in env.items():
+        if not ENV_KEY_RE.match(key) or not isinstance(value, str):
+            raise _BridgeError('bad_env')
+    tab = args.get('tab') or owner
+    cwd = args.get('cwd') or env.get('HOME') or os.path.expanduser('~')
+    return owner, name, argv, env, tab, cwd
+
+
+def choose_split(panes):
+    """Pick where to split. panes: [(key, width_px, height_px), ...].
+
+    Returns (key, vertical) for the largest-area pane; vertical=True stacks
+    the new pane below (VPaned), False puts it beside (HPaned). Same axis
+    rule as Container.split_auto: split across the longer dimension.
+    """
+    key, width, height = max(panes, key=lambda p: p[1] * p[2])
+    return key, not width > height
+
+
+def decode_wait_status(status):
+    """VTE child-exited status (a wait status) -> exit code; -N = signal N."""
+    try:
+        return os.waitstatus_to_exitcode(status)
+    except (ValueError, TypeError):
+        return status
+
+
+def _owned_record_for(term):
+    for rec in _OWNED.values():
+        if rec['uuid'] == term.uuid.urn:
+            return rec
+    return None
+
+
+def _on_owned_exit(term, status):
+    """child-exited handler for owned panes: record, annotate, hold open."""
+    code = decode_wait_status(status)
+    rec = _owned_record_for(term)
+    if rec is not None:
+        rec['exit_status'] = code
+        rec['pid'] = None
+    # Terminal.close() SIGHUPs self.pid; never let it hit a recycled pid.
+    term.pid = None
+    term.is_held_open = True
+    term.titlebar.update()
+    term.get_vte().feed(('\r\n\x1b[1m[exited %d]\x1b[0m\r\n' % code).encode())
+
+
+def _install_owned_hold(term):
+    """Route child-exited to _on_owned_exit instead of the profile's
+    exit_action. Terminal.reconfigure() re-wires child-exited from config and
+    runs on realize, composited-changed and config changes, so re-apply after
+    each of those."""
+    vte = term.get_vte()
+
+    def rewire(*_args):
+        term.cnxids.remove_signal(vte, 'child-exited')
+        term.cnxids.new(vte, 'child-exited',
+                        lambda _vte, status: _on_owned_exit(term, status))
+
+    original = term.reconfigure
+
+    def reconfigure(*args, **kwargs):
+        original(*args, **kwargs)
+        rewire()
+
+    term.reconfigure = reconfigure
+    # Connected after the Terminal's own reconfigure handlers, so these run
+    # second and win.
+    vte.connect('realize', rewire)
+    vte.connect('composited-changed', rewire)
+    rewire()
+
 
 class MCPBridge(plugin.Plugin):
     """Background plugin: opens the control socket on the GLib main loop.
@@ -173,6 +282,10 @@ class MCPBridge(plugin.Plugin):
             'add_bookmark': self._h_add_bookmark,
             'remove_bookmark': self._h_remove_bookmark,
             'drain_bookmark_events': self._h_drain_bookmark_events,
+            # owned panes
+            'spawn_in_pane': self._h_spawn_in_pane,
+            'owned_status': self._h_owned_status,
+            'signal_owned': self._h_signal_owned,
         }
         # Start the socket exactly once for the whole process.
         if _RUNNING['service'] is None:
@@ -909,6 +1022,222 @@ class MCPBridge(plugin.Plugin):
                     'context': text,
                 })
         return {'events': out}
+
+    # ---- handlers: owned panes -------------------------------------------
+
+    def _owned_lookup(self, owner, name):
+        """(record, terminal) for a live owned pane, or (None, None). Drops
+        records whose pane the user has closed."""
+        rec = _OWNED.get((owner, name))
+        if rec is None:
+            return None, None
+        term = self.terminator.find_terminal_by_uuid(rec['uuid'])
+        if term is None:
+            del _OWNED[(owner, name)]
+            return None, None
+        return rec, term
+
+    def _find_tab(self, title):
+        """(page root widget, notebook) of the tab with custom label `title`."""
+        for window in self.terminator.windows:
+            if not window.is_child_notebook():
+                continue
+            notebook = window.get_child()
+            for child in notebook.get_children():
+                label = notebook.get_tab_label(child)
+                if label is not None and label.get_custom_label() == title:
+                    return child, notebook
+        return None, None
+
+    def _owned_spawn(self, term, argv, env, cwd):
+        """Spawn argv in term's VTE with exactly `env`. VTE merges its envv
+        into Terminator's own environment, so the child is started through
+        `env -i` to drop everything the caller didn't pass."""
+        from gi.repository import Vte
+        full_env = dict(env)
+        full_env.setdefault('TERM', term.config['term'])
+        full_env.setdefault('COLORTERM', term.config['colorterm'])
+        full_env['TERMINATOR_UUID'] = term.uuid.urn
+        assignments = ['%s=%s' % kv for kv in sorted(full_env.items())]
+        command = ['/usr/bin/env', '-i'] + assignments + list(argv)
+        try:
+            _result, pid = term.get_vte().spawn_sync(
+                Vte.PtyFlags.DEFAULT, cwd, command, [],
+                GLib.SpawnFlags.DEFAULT, None, None, None)
+        except GLib.Error as ex:
+            raise _BridgeError('spawn_failed: %s' % ex.message)
+        if pid is None or pid <= 0:
+            raise _BridgeError('spawn_failed')
+        term.pid = pid
+        term.command = argv[0]
+        term.is_held_open = False
+        term.titlebar.update()
+        return pid
+
+    def _owned_place(self, term, owner, tab):
+        """Insert a freshly spawned terminal into the owner's tab: a new tab
+        if missing, else split the largest owned pane in that tab across its
+        longer dimension. Never touches any other tab."""
+        from terminatorlib.factory import Factory
+        from terminatorlib.util import enumerate_descendants
+        maker = Factory()
+        root, notebook = self._find_tab(tab)
+        if root is None:
+            anchor = self.terminator.last_focused_term \
+                or self.terminator.terminals[0]
+            window = anchor.get_toplevel()
+            if not window.is_child_notebook():
+                maker.make('Notebook', window=window)
+            notebook = window.get_child()
+            notebook.newtab(widget=term)
+            notebook.get_tab_label(term).set_custom_label(tab, force=True)
+            return
+        if maker.isinstance(root, 'Terminal'):
+            in_tab = [root]
+        else:
+            in_tab = [t for t in enumerate_descendants(root)[1]
+                      if maker.isinstance(t, 'Terminal')]
+        owned_uuids = set(r['uuid'] for r in _OWNED.values()
+                          if r['owner'] == owner)
+        candidates = [t for t in in_tab if t.uuid.urn in owned_uuids] \
+            or in_tab
+        target, vertical = choose_split(
+            [(t, t.get_allocation().width, t.get_allocation().height)
+             for t in candidates])
+        target.get_parent().split_axis(target, vertical=vertical, sibling=term)
+
+    def _h_spawn_in_pane(self, args):
+        """Run argv with exactly env in an owned pane of the owner's tab.
+
+        Respawns in the same pane if (owner, name) exists and has exited;
+        refuses with already_running if it is still running. Focus returns to
+        whatever the user had focused.
+        """
+        from terminatorlib.factory import Factory
+        owner, name, argv, env, tab, cwd = validate_spawn_args(args)
+        rec, term = self._owned_lookup(owner, name)
+        if rec is not None and rec['exit_status'] is None:
+            raise _BridgeError('already_running')
+        previous = self.terminator.last_focused_term
+        views = self._save_views()
+        if term is not None:
+            term.get_vte().feed(b'\r\n\x1b[2m--- respawn ---\x1b[0m\r\n')
+            pid = self._owned_spawn(term, argv, env, cwd)
+        else:
+            term = Factory().make('Terminal')
+            term.set_cwd(cwd)
+            _install_owned_hold(term)
+            try:
+                pid = self._owned_spawn(term, argv, env, cwd)
+            except _BridgeError:
+                # Terminal.__init__ registered it; an unplaced one would show
+                # up in list_terminals as a phantom pane.
+                self.terminator.deregister_terminal(term)
+                raise
+            self._owned_place(term, owner, tab)
+        term.titlebar.set_custom_string(name)
+        term.assigned_name = name
+        _OWNED[(owner, name)] = {
+            'owner': owner, 'name': name, 'tab': tab, 'uuid': term.uuid.urn,
+            'pid': pid, 'started_at': time.time(), 'exit_status': None,
+        }
+        # Queued after the split/newtab focus grab, so it runs last.
+        GLib.idle_add(
+            lambda: (self._restore_views(views, previous, term), False)[1])
+        return {'uuid': term.uuid.urn, 'name': name, 'pid': pid}
+
+    def _save_views(self):
+        """The page each window's notebook is showing, as the page widget
+        (indices shift when a tab is inserted)."""
+        views = []
+        for window in self.terminator.windows:
+            if window.is_child_notebook():
+                notebook = window.get_child()
+                views.append((notebook, notebook.get_nth_page(
+                    notebook.get_current_page())))
+        return views
+
+    def _restore_views(self, views, previous, new_term):
+        """Put every window back on the tab the user was viewing, and give
+        focus back to `previous` only if it is on a tab now showing.
+
+        A split replaces the tab's root widget, so a saved page that is no
+        longer in its notebook was the tab that got split: show the tab
+        holding new_term instead.
+        """
+        from terminatorlib.util import enumerate_descendants
+        showing = []
+        for notebook, page in views:
+            num = notebook.page_num(page)
+            if num == -1:
+                num = next((i for i, child in enumerate(notebook.get_children())
+                            if child is new_term
+                            or new_term in enumerate_descendants(child)[1]),
+                           -1)
+            if num != -1:
+                notebook.set_current_page(num)
+                showing.append(notebook.get_nth_page(num))
+        if previous is None or previous is new_term:
+            return
+        for page in showing:
+            if page is previous or previous in enumerate_descendants(page)[1]:
+                previous.get_vte().grab_focus()
+                return
+
+    def _h_owned_status(self, args):
+        rec, _term = self._owned_lookup(args.get('owner', ''),
+                                        args.get('name', ''))
+        if rec is None:
+            return {'state': 'unknown', 'exit_status': None, 'uuid': None}
+        state = 'running' if rec['exit_status'] is None else 'exited'
+        return {'state': state, 'exit_status': rec['exit_status'],
+                'uuid': rec['uuid']}
+
+    def _h_signal_owned(self, args):
+        """Signal the foreground process group of an owned, running pane
+        (SIGINT = Ctrl-C), then wait up to wait_ms for it to exit."""
+        rec, term = self._owned_lookup(args.get('owner', ''),
+                                       args.get('name', ''))
+        if rec is None:
+            raise _BridgeError('not_owned')
+        if rec['exit_status'] is not None:
+            raise _BridgeError('not_running')
+        sig = OWNED_SIGNALS.get(args.get('signal', 'INT'))
+        if sig is None:
+            raise _BridgeError('bad_signal')
+        wait_ms = _clamp(int(args.get('wait_ms', OWNED_SIGNAL_WAIT_MS)),
+                         0, OWNED_SIGNAL_WAIT_CAP)
+        try:
+            pgrp = os.tcgetpgrp(term.get_vte().get_pty().get_fd())
+        except OSError:
+            pgrp = os.getpgid(rec['pid'])
+        os.killpg(pgrp, sig)
+
+        loop = GLib.MainLoop()
+        live = {'poll', 'timeout'}
+
+        def poll():
+            if rec['exit_status'] is not None:
+                live.discard('poll')
+                loop.quit()
+                return False
+            return True
+
+        def on_timeout():
+            live.discard('timeout')
+            loop.quit()
+            return False
+
+        if wait_ms > 0:
+            poll_id = GLib.timeout_add(OWNED_POLL_MS, poll)
+            timeout_id = GLib.timeout_add(wait_ms, on_timeout)
+            loop.run()
+            if 'poll' in live:
+                GLib.source_remove(poll_id)
+            if 'timeout' in live:
+                GLib.source_remove(timeout_id)
+        state = 'running' if rec['exit_status'] is None else 'exited'
+        return {'state': state, 'exit_status': rec['exit_status']}
 
 
 class _BridgeError(Exception):

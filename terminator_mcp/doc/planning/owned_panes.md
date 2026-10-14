@@ -36,7 +36,8 @@ These are called over the bridge socket by other MCP servers, the same way jlp-r
   - If the tab exists, split the owner's pane with the largest pixel area across its longer pixel
     dimension (side by side if wider than tall). Fall back to any pane in the tab if the owner has
     none there.
-- Focus returns to the pane the user had focused.
+- Creating the tab shows it, as jlp-build's tab does. Later spawns leave every window on the tab
+  the user was viewing, and focus returns to the user's pane if it is on that tab.
 
 **Spawn:** VTE spawn with `argv` and `env`; nothing is typed. The pane title is set to `name`.
 

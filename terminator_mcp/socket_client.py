@@ -69,18 +69,22 @@ def call(method, args=None, timeout=DEFAULT_TIMEOUT):
         except socket.timeout:
             raise BridgeError('timeout', 'connecting to bridge timed out')
 
-        sock.sendall(HEADER.pack(len(payload)))
-        sock.sendall(payload)
+        try:
+            sock.sendall(HEADER.pack(len(payload)))
+            sock.sendall(payload)
 
-        header = _recv_exact(sock, HEADER.size)
-        if header is None:
-            raise BridgeError('connection_closed')
-        (length,) = HEADER.unpack(header)
-        if length <= 0 or length > MAX_FRAME:
-            raise BridgeError('bad_frame_length')
-        body = _recv_exact(sock, length)
-        if body is None:
-            raise BridgeError('connection_closed')
+            header = _recv_exact(sock, HEADER.size)
+            if header is None:
+                raise BridgeError('connection_closed')
+            (length,) = HEADER.unpack(header)
+            if length <= 0 or length > MAX_FRAME:
+                raise BridgeError('bad_frame_length')
+            body = _recv_exact(sock, length)
+            if body is None:
+                raise BridgeError('connection_closed')
+        except socket.timeout:
+            raise BridgeError('timeout',
+                              'no reply from bridge within %.1fs' % timeout)
     finally:
         sock.close()
 

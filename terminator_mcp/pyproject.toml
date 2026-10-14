@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "GPL-2.0-only" }
 dependencies = [
-    "mcp>=1.2.0",
+    "mcp>=1.2.0,<2",
 ]
 
 [project.scripts]

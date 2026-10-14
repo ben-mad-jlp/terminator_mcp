@@ -1,13 +1,11 @@
-"""Terminator MCP server (P0 — read-only).
+"""Terminator MCP server.
 
-A standalone stdio MCP process that lets an LLM observe a running Terminator:
-list terminals, read the visible buffer + scrollback, and read the selection.
+A standalone stdio MCP process that lets an LLM observe and drive a running
+Terminator: read buffers and scrollback, run and send commands behind the
+safety model in terminator_mcp.safety, and manage tabs, panes and bookmarks.
 It talks to the in-process `MCPBridge` plugin over a local Unix-domain socket
 (see terminator_mcp.socket_client). It never imports GTK/VTE and never launches
 Terminator, so it cannot crash or block the user's terminals.
-
-P0 exposes NO write/send/command tools — it is incapable of changing a
-terminal. Those arrive in later phases behind the safety model.
 
 Run:  python -m terminator_mcp
 Register with Claude Code:  claude mcp add terminator -- python -m terminator_mcp
@@ -20,6 +18,10 @@ from mcp.server.fastmcp import FastMCP
 from . import socket_client, naming, safety
 
 mcp = FastMCP('terminator')
+
+# Extra seconds the socket waits beyond a capture's own timeout, so the
+# bridge's timed_out reply arrives instead of a client-side socket timeout.
+CAPTURE_SOCKET_MARGIN_S = 5.0
 
 
 def _err(exc):
@@ -119,9 +121,10 @@ def _execute_capture(uuid, command, timeout_ms):
     Always preceded by the password gate. Returns the bridge's
     {ok, output, exit_code, timed_out, command}.
     """
+    # The bridge blocks for up to timeout_ms, so the socket must outwait it.
     return socket_client.call('run_command_capture', {
         'uuid': uuid, 'command': command, 'timeout_ms': timeout_ms,
-    })
+    }, timeout=timeout_ms / 1000.0 + CAPTURE_SOCKET_MARGIN_S)
 
 
 @mcp.tool()
@@ -458,99 +461,34 @@ def read_raw(terminal: str = '', start_row: int = 0, end_row: int = 0) -> dict:
         return _err(ex)
 
 
-def _start_command(uuid, command):
-    """Start a (possibly long-running) command in a terminal by typing it +
-    Enter. Not captured — use run_command when you need the output."""
-    if command:
-        socket_client.call('send_text', {
-            'uuid': uuid, 'text': command, 'append_enter': True, 'raw': False,
-        })
-
-
 @mcp.tool()
-def new_tab(terminal: str = '', command: str = '', name: str = '') -> dict:
+def new_tab(terminal: str = '', name: str = '') -> dict:
     """Open a new tab in the window of `terminal` (empty = focused terminal).
 
-    Optionally name the tab and start a command in it. Returns the new
-    terminal's uuid (address the tab by it).
+    Layout only: to run something in it, call run_command with the returned
+    uuid. Optionally name the tab. Returns the new terminal's uuid.
     """
     try:
         uuid = _resolve(terminal)
         result = socket_client.call('new_tab', {
             'uuid': uuid, 'title': name or None})
-        _start_command(result['uuid'], command)
         return {'uuid': result['uuid'], 'name': name or None}
     except (socket_client.BridgeError, ValueError) as ex:
         return _err(ex)
 
 
 @mcp.tool()
-def split(terminal: str = '', axis: str = 'h', command: str = '') -> dict:
+def split(terminal: str = '', axis: str = 'h') -> dict:
     """Split `terminal` (empty = focused) horizontally ('h') or vertically
-    ('v'). Optionally start a command in the new pane. Returns its uuid."""
+    ('v'). Layout only: to run something in the new pane, call run_command
+    with the returned uuid."""
     try:
         uuid = _resolve(terminal)
         result = socket_client.call('split', {
             'uuid': uuid, 'axis': 'v' if axis == 'v' else 'h'})
-        _start_command(result['uuid'], command)
         return {'uuid': result['uuid']}
     except (socket_client.BridgeError, ValueError) as ex:
         return _err(ex)
-
-
-@mcp.tool()
-def open_workspace(layout: dict, name: str = '') -> dict:
-    """Create a named multi-tab / split workspace in a new window in one call.
-
-    layout shape:
-      {"window": {"tabs": [
-        {"name": "server", "command": "npm run dev"},
-        {"name": "tests", "command": "...", "splits": [
-            {"axis": "v", "command": "npm test -- --watch", "name": "watch"}]}
-      ]}}
-    Each tab/split may carry an optional `command` (started with Enter, not
-    captured) and `name`. Returns {window_uuid, terminals: [{role, uuid, kind}]}
-    so you can immediately target a pane by uuid (and by name via run_command).
-    """
-    window = layout.get('window', layout) if isinstance(layout, dict) else None
-    tabs = (window or {}).get('tabs') if isinstance(window, dict) else None
-    if not tabs:
-        return {'error': 'empty_layout',
-                'hint': 'expected {window:{tabs:[...]}} with >=1 tab'}
-    try:
-        window_uuid = socket_client.call('new_window', {})['uuid']
-    except socket_client.BridgeError as ex:
-        return _err(ex)
-
-    created = []
-    try:
-        for i, tab in enumerate(tabs):
-            tname = tab.get('name')
-            if i == 0:
-                # First tab reuses the new window's initial terminal.
-                tab_uuid = window_uuid
-                if tname:
-                    socket_client.call('set_tab_title',
-                                       {'uuid': tab_uuid, 'title': tname})
-            else:
-                tab_uuid = socket_client.call('new_tab', {
-                    'uuid': window_uuid, 'title': tname})['uuid']
-            _start_command(tab_uuid, tab.get('command', ''))
-            created.append({'role': tname, 'uuid': tab_uuid, 'kind': 'tab'})
-
-            for sp in tab.get('splits') or []:
-                su = socket_client.call('split', {
-                    'uuid': tab_uuid,
-                    'axis': 'v' if sp.get('axis') == 'v' else 'h'})['uuid']
-                _start_command(su, sp.get('command', ''))
-                created.append({'role': sp.get('name'), 'uuid': su,
-                                'kind': 'split'})
-    except socket_client.BridgeError as ex:
-        # Partial workspace — report what was made plus the failure.
-        return {'error': ex.code, 'window_uuid': window_uuid,
-                'terminals': created, 'partial': True}
-
-    return {'window_uuid': window_uuid, 'terminals': created}
 
 
 def main():

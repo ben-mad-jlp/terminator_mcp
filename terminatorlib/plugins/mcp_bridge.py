@@ -38,6 +38,7 @@ import struct
 from gi.repository import Gio, GLib
 
 import terminatorlib.plugin as plugin
+from terminatorlib import rowmap
 from terminatorlib.terminator import Terminator
 from terminatorlib.util import dbg, err
 
@@ -485,26 +486,24 @@ class MCPBridge(plugin.Plugin):
                            1, MAX_LINES_CAP)
         from_end = bool(args.get('from_end', True))
         vte = term.get_vte()
-        vadj = vte.get_vadjustment()
-        total_rows = int(vadj.get_upper())
+        first, total_rows = rowmap.bounds(vte)
         row_count = vte.get_row_count()
 
         if mode == 'visible':
-            value = int(vadj.get_value())
-            start = value
-            end = value + row_count - 1
+            start = rowmap.top_row(vte)
+            end = start + row_count - 1
             result = self._text_slice(term, start, end, total_rows)
             result['next_offset'] = None
             return result
 
         # scrollback mode: bounded window of the full buffer
         if from_end:
-            start = max(0, total_rows - max_lines)
+            start = max(first, total_rows - max_lines)
             end = max(start, total_rows - 1)
-            next_offset = start - 1 if start > 0 else None
+            next_offset = start - 1 if start > first else None
         else:
-            start = 0
-            end = min(total_rows - 1, max_lines - 1)
+            start = first
+            end = min(total_rows - 1, first + max_lines - 1)
             next_offset = end + 1 if end + 1 < total_rows else None
         result = self._text_slice(term, start, end, total_rows)
         result['next_offset'] = next_offset
@@ -516,8 +515,8 @@ class MCPBridge(plugin.Plugin):
         offset = max(0, int(args.get('offset', 0)))
         limit = _clamp(int(args.get('limit', 500)), 1, PAGE_LIMIT_CAP)
         vte = term.get_vte()
-        total_rows = int(vte.get_vadjustment().get_upper())
-        start = min(offset, max(0, total_rows - 1))
+        first, total_rows = rowmap.bounds(vte)
+        start = max(first, min(offset, total_rows - 1))
         end = min(start + limit - 1, total_rows - 1)
         result = self._text_slice(term, start, end, total_rows)
         nxt = end + 1
@@ -546,10 +545,8 @@ class MCPBridge(plugin.Plugin):
 
     def _last_nonempty_line(self, vte):
         """Cheap read of the last non-empty visible line (for the safety probe)."""
-        vadj = vte.get_vadjustment()
-        total = int(vadj.get_upper())
-        row_count = vte.get_row_count()
-        start = max(0, total - row_count)
+        first, total = rowmap.bounds(vte)
+        start = max(first, total - vte.get_row_count())
         text = _read_rows(vte, start, max(start, total - 1))
         lines = [ln for ln in text.splitlines() if ln.strip()]
         return lines[-1] if lines else ''
@@ -635,8 +632,8 @@ class MCPBridge(plugin.Plugin):
         readback = _clamp(int(vte.get_row_count()) + 1000, 1, MAX_LINES_CAP)
 
         def read_tail():
-            total = int(vte.get_vadjustment().get_upper())
-            start = max(0, total - readback)
+            first, total = rowmap.bounds(vte)
+            start = max(first, total - readback)
             return _read_rows(vte, start, max(start, total - 1))
 
         state = {'found': False, 'exit': None, 'text': '', 'live': set()}
@@ -713,12 +710,9 @@ class MCPBridge(plugin.Plugin):
         loop.run()
 
     def _visible_text(self, vte):
-        vadj = vte.get_vadjustment()
-        total = int(vadj.get_upper())
-        row_count = vte.get_row_count()
-        value = int(vadj.get_value())
-        start = value
-        end = min(value + row_count - 1, max(0, total - 1))
+        first, total = rowmap.bounds(vte)
+        start = rowmap.top_row(vte)
+        end = min(start + vte.get_row_count() - 1, max(first, total - 1))
         return _read_rows(vte, start, end)
 
     def _h_send_text(self, args):
@@ -809,9 +803,7 @@ class MCPBridge(plugin.Plugin):
             rx = re.compile(pat, flags)
         except re.error as ex:
             raise _BridgeError('bad_regex: %s' % ex)
-        vadj = vte.get_vadjustment()
-        lower = int(vadj.get_lower())
-        total = int(vadj.get_upper())
+        lower, total = rowmap.bounds(vte)
         start = max(lower, total - SEARCH_SCAN_CAP)
         matches = []
         truncated = False
@@ -836,9 +828,7 @@ class MCPBridge(plugin.Plugin):
         """Read an explicit absolute row range [start_row, end_row]."""
         term = self._resolve(args.get('uuid', ''))
         vte = term.get_vte()
-        vadj = vte.get_vadjustment()
-        lower = int(vadj.get_lower())
-        total = int(vadj.get_upper())
+        lower, total = rowmap.bounds(vte)
         last = max(lower, total - 1)
         a = _clamp(int(args.get('start_row', 0)), lower, last)
         b = _clamp(int(args.get('end_row', a)), lower, last)
@@ -939,9 +929,9 @@ class MCPBridge(plugin.Plugin):
         Centers the requested row in the viewport.
         """
         term = self._resolve(args.get('uuid', ''))
-        adj = term.get_vte().get_vadjustment()
-        lower = adj.get_lower()
-        upper = adj.get_upper()
+        vte = term.get_vte()
+        adj = vte.get_vadjustment()
+        lower, upper = rowmap.bounds(vte)
         page = adj.get_page_size()
         bottom = max(lower, upper - page)
         position = args.get('position')
@@ -954,9 +944,9 @@ class MCPBridge(plugin.Plugin):
             r = int(row)
             value = bottom if r < 0 else max(lower, min(bottom, r - page / 2.0))
         else:
-            value = adj.get_value()
-        adj.set_value(value)
-        return {'ok': True, 'value': int(adj.get_value()),
+            value = rowmap.top_row(vte)
+        adj.set_value(value - lower)
+        return {'ok': True, 'value': int(adj.get_value()) + lower,
                 'lower': int(lower), 'upper': int(upper), 'page': int(page)}
 
     def _h_list_bookmarks(self, args):

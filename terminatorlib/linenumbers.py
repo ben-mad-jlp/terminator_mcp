@@ -19,6 +19,8 @@ menu (Terminal.do_linenumbers_toggle).
 
 from gi.repository import Gtk, Gdk
 
+from . import rowmap
+
 PAD = 6                      # px padding either side of the numbers
 DIGITS = 5                   # zero-padded hex width (~1M rows)
 _FMT = '%0{}X'.format(DIGITS)
@@ -49,8 +51,7 @@ class LineNumbers(Gtk.DrawingArea):
     def _y_to_row(self, y):
         """Map a click y-coordinate to the absolute buffer row under it."""
         char_h = self.vte.get_char_height() or 1
-        top_row = int(self._adj.get_value())
-        return top_row + int(y // char_h)
+        return rowmap.top_row(self.vte) + int(y // char_h)
 
     def _on_button(self, _widget, event):
         if event.button != 1:
@@ -67,7 +68,7 @@ class LineNumbers(Gtk.DrawingArea):
 
         char_h = self.vte.get_char_height() or 1
         rows = self.vte.get_row_count()
-        top_row = int(self._adj.get_value())
+        top_row = rowmap.top_row(self.vte)
 
         cr.select_font_face('monospace', 0, 0)
         cr.set_font_size(max(8.0, char_h - 2.0))

@@ -29,6 +29,7 @@ from .searchbar import Searchbar
 from .translation import _
 from .signalman import Signalman
 from . import plugin
+from . import rowmap
 from terminatorlib.layoutlauncher import LayoutLauncher
 from . import regex
 from .minimap import Minimap
@@ -1286,9 +1287,8 @@ class Terminal(Gtk.VBox):
         snap = {'row': row, 'line': None, 'context_start': None,
                 'context_end': None, 'context': None}
         try:
-            vadj = self.vte.get_vadjustment()
-            lower = int(vadj.get_lower())
-            last = int(vadj.get_upper()) - 1
+            lower, end = rowmap.bounds(self.vte)
+            last = end - 1
             start = max(lower, row - BOOKMARK_CONTEXT_ROWS)
             end = min(last, row + BOOKMARK_CONTEXT_ROWS)
             snap['line'] = self._buffer_text(row, row).rstrip('\n')

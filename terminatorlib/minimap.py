@@ -21,6 +21,8 @@ import re
 
 from gi.repository import Gtk, Gdk, GLib, Vte
 
+from . import rowmap
+
 WIDTH = 64                  # column width in px
 MAX_SCAN = 5000             # most-recent rows represented (perf bound)
 REFRESH_MS = 150            # coalesce rapid contents-changed bursts
@@ -111,8 +113,7 @@ class Minimap(Gtk.DrawingArea):
             return ''
 
     def _recompute(self):
-        lower = int(self._adj.get_lower())
-        upper = int(self._adj.get_upper())
+        lower, upper = rowmap.bounds(self.vte)
         start = max(lower, upper - MAX_SCAN)
         text = self._read_text(start, max(start, upper - 1))
         lines = text.split('\n')
@@ -190,10 +191,10 @@ class Minimap(Gtk.DrawingArea):
         height = alloc.height or 1
         page = self._adj.get_page_size()
         span = self._scan_total or 1
-        value = self._scan_start + (y / height) * span - page / 2.0
-        lo = self._adj.get_lower()
-        hi = max(lo, self._adj.get_upper() - page)
-        return max(lo, min(hi, value))
+        row = self._scan_start + (y / height) * span - page / 2.0
+        lo, upper = rowmap.bounds(self.vte)
+        hi = max(lo, upper - page)
+        return max(lo, min(hi, row)) - lo
 
     # ---- drawing ---------------------------------------------------------
 
@@ -240,7 +241,7 @@ class Minimap(Gtk.DrawingArea):
 
         # current viewport box
         span = n or 1
-        value = self._adj.get_value()
+        value = rowmap.top_row(self.vte)
         page = self._adj.get_page_size()
         top = (value - self._scan_start) / span * height
         bot = (value + page - self._scan_start) / span * height

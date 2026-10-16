@@ -216,6 +216,9 @@ to Claude with your next prompt.
   at click time.
 - **Rows are hex, like the gutter.** The hook reports `row=0x69 (105)`. The
   decimal is for `read_raw`.
+- **Row numbers keep counting after `clear` or `reset`.** They count from the
+  first line the pane ever printed, so a row number keeps naming the same line
+  even when older lines are dropped.
 - **Each bookmark is sent once, to whichever Claude session you next submit a
   prompt in.** There is one queue for all of Terminator. To send the same line
   again (to the same or another session), click it off and on again. Clicking

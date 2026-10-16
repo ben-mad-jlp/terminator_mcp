@@ -363,7 +363,9 @@ def spawn_new_terminator(cwd, args):
             return False
       
     dbg("Spawning: %s" % cmd)
-    subprocess.Popen([cmd]+args)
+    # Run the script with this interpreter rather than its shebang, which
+    # names `python` (absent on Ubuntu) and may not be the running venv.
+    subprocess.Popen([sys.executable, cmd]+args)
 
 def display_manager():
     """Try to detect which display manager we run under"""

@@ -2,8 +2,10 @@
 
 A fork of Terminator plus an MCP server that lets Claude read and drive its panes.
 Architecture and install are in `terminator_mcp/README.md`; owned-pane design in
-`terminator_mcp/doc/planning/owned_panes.md`. Everything outside `terminator_mcp/`,
-`terminatorlib/plugins/mcp_bridge.py` and `tests/test_mcp_*.py` is upstream Terminator.
+`terminator_mcp/doc/planning/owned_panes.md`. Fork-owned: `terminator_mcp/`,
+`terminatorlib/plugins/mcp_bridge.py`, `terminatorlib/plugins/restore_layout.py`,
+`terminatorlib/rowmap.py` and `tests/test_mcp_*.py`; the rest is upstream Terminator
+with small fork changes.
 
 ## Two processes, two restarts
 

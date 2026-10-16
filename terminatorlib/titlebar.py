@@ -3,6 +3,7 @@
 """titlebar.py - classes necessary to provide a terminal title bar"""
 
 from gi.repository import Gtk, Gdk
+from gi.repository import GLib
 from gi.repository import GObject
 from gi.repository import Pango
 
@@ -53,6 +54,8 @@ class Titlebar(Gtk.EventBox):
         self.groupicon = Gtk.Image()
         self.bellicon = Gtk.Image()
         self.bellicon.set_no_show_all(True)
+        self.badge = Gtk.Label()
+        self.badge.set_no_show_all(True)
 
         self.groupentry = Gtk.Entry()
         self.groupentry.set_no_show_all(True)
@@ -87,6 +90,7 @@ class Titlebar(Gtk.EventBox):
         hbox.pack_start(Gtk.VSeparator(), False, True, 0)
         hbox.pack_start(viewport, True, True, 0)
         hbox.pack_end(self.bellicon, False, False, 2)
+        hbox.pack_end(self.badge, False, False, 4)
 
         self.add(hbox)
         hbox.show_all()
@@ -315,5 +319,14 @@ class Titlebar(Gtk.EventBox):
         """Set a custom string"""
         self.label.set_text(string)
         self.label.set_custom()
+
+    def set_badge(self, text):
+        """Show a short status note at the right end; empty text hides it.
+        Kept apart from the title, which plugins may match panes by."""
+        if text:
+            self.badge.set_markup('<b>%s</b>' % GLib.markup_escape_text(text))
+            self.badge.show()
+        else:
+            self.badge.hide()
 
 GObject.type_register(Titlebar)

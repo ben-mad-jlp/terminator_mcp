@@ -235,6 +235,26 @@ They have no MCP tools here: they exist so a client can wrap them in its own
 policy, such as jlp-claude-plugin's `run_sim`. Design and semantics:
 [doc/planning/owned_panes.md](doc/planning/owned_panes.md).
 
+## Restore layout
+
+Right-click → **Restore layout ▸ <name>** finds the tab labeled `<name>` in the
+window, or builds it as a new tab from the saved layout, then types each pane's
+**Custom command** into the panes sitting at an idle prompt. Busy panes get a
+titlebar badge (`busy: ssh`) that clears when you focus them. Panes are matched
+by title, so title every pane in the layout.
+
+- Enable **RestoreLayout** in Preferences → Plugins.
+- Save a single-tab layout in Preferences → Layouts, with one shell line per
+  pane as its Custom command, e.g. `ssh -t pnp.jlp "bash -ic 'devtach launch'"`.
+  The outer quotes matter: ssh hands the remote shell one string to re-parse.
+- Don't launch these layouts with `terminator -l`: that spawns the commands in
+  place of the shell.
+- So a dropped ssh exits soon after an unpause instead of hanging, set
+  `ServerAliveInterval 5` and `ServerAliveCountMax 2` for those hosts in
+  `~/.ssh/config`.
+
+Design: [doc/planning/restore_layout.md](doc/planning/restore_layout.md).
+
 ## Tips
 
 ### Using with tmux (or screen) on a remote host

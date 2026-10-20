@@ -220,7 +220,9 @@ to Claude with your next prompt.
   first line the pane ever printed, so a row number keeps naming the same line
   even when older lines are dropped.
 - **Each bookmark is sent once, to whichever Claude session you next submit a
-  prompt in.** There is one queue for all of Terminator. To send the same line
+  prompt in.** There is one queue for all of Terminator. Subagent reports and
+  messages between sessions also fire the hook, but they leave the queue
+  alone; only a prompt you type takes it. To send the same line
   again (to the same or another session), click it off and on again. Clicking
   a line that is still marked only removes the mark. Removing a bookmark
   before sending cancels it.

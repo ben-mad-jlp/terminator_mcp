@@ -24,3 +24,6 @@ terminatorlib/meliae
 .intltool*
 data/terminator.appdata.xml
 data/terminator.desktop
+
+## scratch
+.tmp/

@@ -17,6 +17,7 @@ Wire it up in Claude Code settings.json (~/.claude/settings.json):
     }
 """
 
+import json
 import sys
 
 from . import socket_client
@@ -54,7 +55,24 @@ def _format(events):
     return '\n'.join(lines)
 
 
+def _from_agent(stdin_text):
+    """True when the prompt is a subagent or peer-session message, not typed.
+
+    Claude Code fires UserPromptSubmit for those too, and the hook input has
+    no origin field; the prompt text starting with <agent-message is the only
+    marker. Unreadable input counts as typed, so bookmarks still get sent.
+    """
+    try:
+        prompt = json.loads(stdin_text).get('prompt') or ''
+    except (ValueError, AttributeError):
+        return False
+    return prompt.lstrip().startswith('<agent-message ')
+
+
 def main():
+    # Leave the queue for the next prompt the user types, in whatever session.
+    if _from_agent(sys.stdin.read()):
+        return 0
     try:
         result = socket_client.call('drain_bookmark_events', {})
     except socket_client.BridgeError:

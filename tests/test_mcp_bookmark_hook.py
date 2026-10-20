@@ -1,6 +1,48 @@
-"""Tests for the UserPromptSubmit bookmark hook's formatting."""
+"""Tests for the UserPromptSubmit bookmark hook."""
 
+import io
+import json
+
+from terminator_mcp import bookmark_hook
 from terminator_mcp.bookmark_hook import _format, _row
+
+AGENT_PROMPT = ('<agent-message from="afd2e87d26f7282a9">\n'
+                '[Subagent hand-back] The report follows:\n  done\n'
+                '</agent-message>')
+
+
+def _run_main(monkeypatch, stdin_text):
+    """Run main() with stdin_text; return (drain calls made, stdout)."""
+    calls = []
+
+    def fake_call(method, args):
+        calls.append(method)
+        return {'events': [{'name': 'talker', 'row': 1, 'context_start': 0,
+                            'context_end': 2, 'line': 'x', 'context': 'x\n'}]}
+
+    monkeypatch.setattr(bookmark_hook.socket_client, 'call', fake_call)
+    monkeypatch.setattr('sys.stdin', io.StringIO(stdin_text))
+    out = io.StringIO()
+    monkeypatch.setattr('sys.stdout', out)
+    assert bookmark_hook.main() == 0
+    return calls, out.getvalue()
+
+
+def test_typed_prompt_drains_bookmarks(monkeypatch):
+    calls, out = _run_main(monkeypatch, json.dumps({'prompt': 'look at this'}))
+    assert calls == ['drain_bookmark_events']
+    assert 'terminal=talker' in out
+
+
+def test_agent_message_leaves_bookmarks_queued(monkeypatch):
+    calls, out = _run_main(monkeypatch, json.dumps({'prompt': AGENT_PROMPT}))
+    assert calls == []
+    assert out == ''
+
+
+def test_unreadable_stdin_still_drains(monkeypatch):
+    calls, _ = _run_main(monkeypatch, 'not json')
+    assert calls == ['drain_bookmark_events']
 
 
 def test_row_is_hex_like_the_gutter_with_decimal():

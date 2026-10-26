@@ -1096,6 +1096,12 @@ class MCPBridge(plugin.Plugin):
         rec, term = self._owned_lookup(owner, name)
         if rec is not None and rec['exit_status'] is None:
             raise _BridgeError('already_running')
+        if term is None:
+            # A zoomed window's notebook is detached: _find_tab can't see its
+            # tabs, and a new tab would wrap the zoomed terminal in a second
+            # notebook, stranding the rest.
+            for window in self.terminator.windows:
+                window.unzoom()
         previous = self.terminator.last_focused_term
         views = self._save_views()
         if term is not None:

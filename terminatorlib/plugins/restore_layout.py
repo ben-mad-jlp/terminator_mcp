@@ -137,6 +137,8 @@ class RestoreLayout(plugin.MenuItem):
             err('restore_layout: %s is not a single-tab layout' % name)
             return
         window = terminal.get_toplevel()
+        # Zoomed, the notebook is detached and its tabs unreachable.
+        window.unzoom()
         page = self._find_tab(window, name)
         built = page is None
         if built:
